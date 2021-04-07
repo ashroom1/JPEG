@@ -1,0 +1,18 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+/Users/ashwin/CLionProjects/JPEGinCPlusPlus/Decoder.cpp
+JPEG.h
+/Users/ashwin/CLionProjects/JPEGinCPlusPlus/JPEG.h
+iostream
+-
+fstream
+-
+
+/Users/ashwin/CLionProjects/JPEGinCPlusPlus/JPEG.h
+
