@@ -147,9 +147,144 @@ void readRestartInterval(std::ifstream& inFile, Header* const header) {
     }
 }
 
-void readHuffmanTable(std::ifstream& inFile, const Header* const header) {
-
+void readHuffmanTable(std::ifstream& inFile, Header* const header) {
     std::cout << "Reading DHT marker\n";
+    int length = (inFile.get() << 8) + inFile.get();
+    length -= 2;
+
+    while (length > 0) {
+        unsigned int tableInfo = inFile.get();
+        unsigned int tableID = tableInfo & 0x0F;
+        bool ACTable = tableInfo >> 4;
+
+        if (tableID > 3) {
+            std::cout << "Error - Invalid Huffman table ID: " << (unsigned int) tableID << '\n';
+            header->valid = false;
+            return;
+        }
+
+        HuffmanTable* hTable;
+        if (ACTable) {
+            hTable = &header->huffmanACTables[tableID];
+        }
+        else {
+            hTable = &header->huffmanDCTables[tableID];
+        }
+        hTable->set = true;
+
+        hTable->offsets[0] = 0;
+        unsigned int allSymbols = 0;
+        for (unsigned int i = 1; i <= 16; ++i) {
+            allSymbols += inFile.get();
+            hTable->offsets[i] = allSymbols;
+        }
+
+        if (allSymbols > 162) {
+            std::cout << "Error - Too many symbols in Huffman table\n";
+            header->valid = false;
+            return;
+        }
+
+        for (unsigned int i = 0; i < allSymbols; ++i) {
+            hTable->symbols[i] = inFile.get();
+        }
+
+        length -= 17 + allSymbols;
+    }
+
+    if (length != 0) {
+        std::cout << "Error - DHT invalid\n";
+        header->valid = false;
+    }
+}
+
+void readStartOfScan(std::ifstream& inFile, Header* const header) {
+
+    std::cout << "Reading SOS Marker\n";
+    if (header->numComponents == 0) {
+        std::cout << "Error - SOS detected before SOF\n";
+        header->valid = false;
+        return;
+    }
+
+    unsigned int length = (inFile.get() << 8) + inFile.get();
+
+    for (unsigned int i = 0; i < header->numComponents; ++i) {
+        header->colorComponents[i].used = false;
+    }
+
+    unsigned char numComponents = inFile.get();
+    for (unsigned int i = 0; i < numComponents; ++i) {
+        unsigned char componentID = inFile.get();
+        // component IDs are usually 1, 2, 3 but can rarely be 0, 1, 2
+        if (header->zeroBased) {
+            componentID += 1;
+        }
+        if (componentID > header->numComponents) {
+            std::cout << "Error - Invalid color component ID: " << (unsigned int) componentID << '\n';
+            header->valid = false;
+            return;
+        }
+        ColorComponent *component = &header->colorComponents[componentID - 1];
+        if (component->used) {
+            std::cout << "Error - Duplicate color component ID: " << (unsigned int) componentID << '\n';
+            header->valid = false;
+            return;
+        }
+
+        component->used = true;
+
+        unsigned char huffmanTableIDs = inFile.get();
+        component->huffmanDCTableID = huffmanTableIDs >> 4;
+        component->huffmanACTableID = huffmanTableIDs & 0x0F;
+
+        if (component->huffmanDCTableID > 3) {
+            std::cout << "Error - Invalid Huffman DC table ID: " << (unsigned int) component->huffmanDCTableID << '\n';
+            header->valid = false;
+            return;
+        }
+        if (component->huffmanACTableID > 3) {
+            std::cout << "Error - Invalid Huffman AC table ID: " << (unsigned int) component->huffmanACTableID << '\n';
+            header->valid = false;
+            return;
+        }
+    }
+
+    header->startofSelection = inFile.get();
+    header->endOfSelection = inFile.get();
+    unsigned char successiveApproximation = inFile.get();
+    header->successiveApproximationHigh = successiveApproximation > 4;
+    header->successiveApproximationLow = successiveApproximation & 0x0F;
+
+    // Baseline JPEGs don't use spectral selection or successive approximation
+    if (header->startofSelection != 0 || header->endOfSelection != 63) {
+        std::cout << "Error - Invalid spectral selection | May not be baseline JPEG\n";
+        header->valid = false;
+        return;
+    }
+
+    if (header->successiveApproximationHigh != 0 || header->successiveApproximationLow != 0) {
+        std::cout << "Error - Invalid successive approximation | May not be baseline JPEG\n";
+        header->valid = false;
+        return;
+    }
+
+    if (length - 6 - (2 * numComponents) != 0) {
+        std::cout << "Error - SOS invalid\n";
+        header->valid = false;
+    }
+
+}
+
+void readComment(std::ifstream& inFile, Header* const header) {
+
+    std::cout << "Reading COM Marker\n";
+    unsigned int length = (inFile.get() << 8) + inFile.get();
+
+    for (unsigned int i = 0; i < length - 2; ++i) {
+        inFile.get();
+    }
+
 }
 
 Header* readJPG(const std::string& filename) {
@@ -193,7 +328,12 @@ Header* readJPG(const std::string& filename) {
             return header;
         }
 
-        if (current == DHT) {
+        if (current == SOS) {
+            readStartOfScan(inFile, header);
+            break;
+        }
+
+        else if (current == DHT) {
             readHuffmanTable(inFile, header);
         }
 
@@ -204,7 +344,6 @@ Header* readJPG(const std::string& filename) {
         else if (current == SOF0) {
             header->frameType = SOF0;
             readStartOfFrame(inFile, header);
-            break;
         }
 
 
@@ -216,10 +355,155 @@ Header* readJPG(const std::string& filename) {
             readAPPN(inFile, header);
         }
 
+        else if (current == COM || (current >= JPG0 && current <= JPG13) || current == DNL || current == DHP || current == EXP) {
+            readComment(inFile, header);
+        }
+
+        else if (current == TEM) {
+
+        }
+
+        else if (current == 0xFF) {     // any number of 0xFF in a row are allowed and should be skipped
+            current = inFile.get();
+            continue;
+        }
+
+        else if (current == SOI) {
+            std::cout << "Error - Embedded JPGs not supported\n";
+            header->valid = false;
+            inFile.close();
+            return header;
+        }
+
+        else if (current == EOI) {
+            std::cout << "Error - EOI detected before SOS\n";
+            header->valid = false;
+            inFile.close();
+            return header;
+        }
+
+        else if (current == DAC) {
+            std::cout << "Error - Arithmetic coding mode not supported\n";
+            header->valid = false;
+            inFile.close();
+            return header;
+        }
+
+        else if (current >= SOF0 && current <= SOF15) {
+            std::cout << "Error - SOF marker not supported: 0x\n" << std::hex << (unsigned int) current << std::dec << '\n';
+            header->valid = false;
+            inFile.close();
+            return header;
+        }
+
+        else if (current >= RST0 && current <= RST7) {
+            std::cout << "Error - RSTN detected before SOS\n";
+            header->valid = false;
+            inFile.close();
+            return header;
+        }
+
+        else {
+            std::cout << "Error - Unknown marker: 0x" << std::hex << (unsigned int) current << std::dec << '\n';
+            header->valid = false;
+            inFile.close();
+            return header;
+        }
+
         last = inFile.get();
         current = inFile.get();
 
     }
+
+    // after SOS
+
+    if (header->valid) {
+
+        current = inFile.get();
+
+        //Read compressed image data
+
+        while (true) {
+            if (!inFile) {
+                std::cout << "Error - File ended premature\n";
+                header->valid = false;
+                inFile.close();
+                return header;
+            }
+
+            last = current;
+            current = inFile.get();
+
+            // if marker is found
+            if (last == 0xFF) {
+                // end of image
+
+                if (current == EOI) {
+                    break;
+                }
+
+                //0xFF00 means put a literal 0xFF in image data and ignore 0x00
+                else if (current == 0x00) {
+                    header->huffmanData.push_back(last);
+                    // overwrite 0x00 with next byte
+                    current = inFile.get();
+                }
+                // restart marker
+                else if (current >= RST0 && current <= RST7) {
+                    // overwrite marker with next byte
+                    current = inFile.get();
+                }
+                // ignore multiple 0xFF's in a row
+                else if (current == 0xFF) {
+                    continue;
+                }
+
+                else {
+                    std::cout << "Error - Invalid marker during compressed data scan: 0x" << std::hex << (unsigned int) current << std::dec << '\n';
+                    header->valid = false;
+                    inFile.close();
+                    return header;
+                }
+            }
+
+            else {
+                header->huffmanData.push_back(last);
+            }
+        }
+    }
+
+    // validate header info
+
+    if (header->numComponents != 1 && header->numComponents != 3) {
+        std::cout << "Error - " << (unsigned int) header->numComponents << " color components given (1 or 3 required)\n";
+        header->valid = false;
+        inFile.close();
+        return header;
+    }
+
+    for (unsigned int i = 0; i < header->numComponents; ++i) {
+        if (!header->quantizationTables[header->colorComponents[i].quantizationTableID].set) {
+            std::cout << "Error - Color component using uninitialized quantization table\n";
+            header->valid = false;
+            inFile.close();
+            return header;
+        }
+        if (!header->huffmanDCTables[header->colorComponents[i].huffmanDCTableID].set) {
+            std::cout << "Error - Color component using uninitialized Huffman DC table\n";
+            header->valid = false;
+            inFile.close();
+            return header;
+        }
+        if (!header->huffmanACTables[header->colorComponents[i].huffmanACTableID].set) {
+            std::cout << "Error - Color component using uninitialized Huffman AC table\n";
+            header->valid = false;
+            inFile.close();
+            return header;
+        }
+
+    }
+
+    inFile.close();
     return header;
 }
 
@@ -252,6 +536,50 @@ void printHeader(const Header* const header) {
         std::cout << "Quantization Table ID: " << (unsigned int) header->colorComponents[i].quantizationTableID << '\n';
     }
 
+    std::cout << "DHT================\n";
+    std::cout << "DC Tables\n";
+    for (unsigned int i = 0; i < 4; ++i) {
+        if (header->huffmanDCTables[i].set) {
+            std::cout << "Table ID: " << i << std::endl;
+            std::cout << "Symbols:\n";
+            for (unsigned int j = 0; j < 16; ++j) {
+                std::cout << (j + 1) << ": ";
+                for (unsigned int k = header->huffmanDCTables[i].offsets[j]; k < header->huffmanDCTables[i].offsets[j + 1]; ++k) {
+                    std::cout << std::hex << (unsigned int) header->huffmanDCTables[i].symbols[k] << ' ';
+                }
+                std::cout << '\n';
+            }
+        }
+    }
+
+    std::cout << "AC Tables\n";
+    for (unsigned int i = 0; i < 4; ++i) {
+        if (header->huffmanACTables[i].set) {
+            std::cout << "Table ID: " << i << std::endl;
+            std::cout << "Symbols:\n";
+            for (unsigned int j = 0; j < 16; ++j) {
+                std::cout << (j + 1) << ": ";
+                for (unsigned int k = header->huffmanACTables[i].offsets[j]; k < header->huffmanACTables[i].offsets[j + 1]; ++k) {
+                    std::cout << std::hex << (unsigned int) header->huffmanACTables[i].symbols[k] << ' ';
+                }
+                std::cout << '\n';
+            }
+        }
+    }
+
+    std::cout << "SOS==============\n";
+    std::cout << "Start of Selection: " << (unsigned int) header->startofSelection << '\n';
+    std::cout << "End of Selection: " << (unsigned int) header->endOfSelection << '\n';
+    std::cout << "Successive Approximation High: " << (unsigned int) header->successiveApproximationHigh << '\n';
+    std::cout << "Successive Approximation Low: " << (unsigned int) header->successiveApproximationLow << '\n';
+    std::cout << "Color Components:\n";
+    for (unsigned int i = 0; i < header->numComponents; ++i) {
+        std::cout << "Component ID: " << (i + 1) << '\n';
+        std::cout << "Huffman DC Table ID: " << (unsigned int) header->colorComponents[i].huffmanDCTableID << '\n';
+        std::cout << "Huffman AC Table ID: " << (unsigned int) header->colorComponents[i].huffmanACTableID << '\n';
+    }
+    std::cout << "Length of Huffman Data: " << header->restartInternal << '\n';
+    std::cout << "DRI===================\n";
     std::cout << "Restart Interval: " << header->restartInternal << '\n';
 }
 
