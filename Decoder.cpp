@@ -511,11 +511,11 @@ void printHeader(const Header* const header) {
     if (header == nullptr)
         return;
     std::cout << "DQT====================\n";
-    for (uint i = 0; i < 4; ++i) {
+    for (unsigned int i = 0; i < 4; ++i) {
         if (header->quantizationTables[i].set) {
             std::cout << "Table ID: " << i << "\n";
             std::cout << "Table Data:";
-            for (uint j = 0; j < 64; ++j) {
+            for (unsigned int j = 0; j < 64; ++j) {
                 if (!(j % 8))
                     std::cout << '\n';
                 std::cout << header->quantizationTables[i].table[j] << ' ';
