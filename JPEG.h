@@ -96,6 +96,21 @@ struct HuffmanTable {
 
 };
 
+struct MCU {
+    union {
+        int y[64] = {0};
+        int r[64];
+    };
+
+    union {
+        int cb[64] = {0};
+        int g[64];
+    };
+    union {
+        int cr[64] = {0};
+        int b[64];
+    };
+};
 
 struct ColorComponent {
 
@@ -151,8 +166,7 @@ const unsigned int zigZagMap[] = {
         29, 22, 15, 23, 30, 37, 44, 51,
         58, 59, 52, 45, 38, 31, 39, 46,
         53, 60, 61, 54, 47, 55, 62, 63
-};
-
+} ;
 
 
 #define JPEGINCPLUSPLUS_JPEG_H
